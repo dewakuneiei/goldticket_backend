@@ -9,12 +9,10 @@ app.use(cors());
 app.use(bodyParser.json());
 
 // เชื่อมต่อ MongoDB
-mongoose.connect('mongodb+srv://sukritchosri:12345Aa@goldticket.6logoc8.mongodb.net/treasureHunt?retryWrites=true&w=majority&appName=goldticket', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-})
-.then(() => console.log('เชื่อมต่อ MongoDB Atlas สำเร็จ'))
-.catch(err => console.error('เกิดข้อผิดพลาดในการเชื่อมต่อ:', err));
+mongoose.connect('mongodb+srv://sukritchosri:12345Aa@goldticket.6logoc8.mongodb.net/treasureHunt?retryWrites=true&w=majority&appName=goldticket')
+  .then(() => console.log('เชื่อมต่อ MongoDB Atlas สำเร็จ'))
+  .catch(err => console.error('เกิดข้อผิดพลาดในการเชื่อมต่อ:', err));
+  
 
 // สร้าง Schema สำหรับ Treasure
 const treasureSchema = new mongoose.Schema({
