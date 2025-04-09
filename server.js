@@ -31,15 +31,21 @@ const treasureSchema = new mongoose.Schema({
 
 const Treasure = mongoose.model('Treasure', treasureSchema);
 
+
+
 // เเสดงสมบัติทั้งหมดบนเเผนที่
 app.get('/api/treasures', async (req, res) => {
   try {
-    const treasures = await Treasure.find({ claimed: false });
-    res.json(treasures);
+      console.log("Fetching treasures...");  // ตรวจสอบว่าเริ่มการดึงข้อมูลหรือไม่
+      const treasures = await Treasure.find({ claimed: false });
+      console.log("Treasures found:", treasures);  // ตรวจสอบข้อมูลที่ได้รับจาก MongoDB
+      res.json(treasures);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+      console.error("Error fetching treasures:", err);  // แสดงข้อผิดพลาดถ้ามี
+      res.status(500).json({ message: err.message });
   }
 });
+
 
 // เพิ่มสมบัติใหม่
 app.post('/api/treasures', async (req, res) => {
