@@ -10,7 +10,7 @@ app.use(bodyParser.json());
 
 
 // เชื่อมต่อ MongoDB
-mongoose.connect('mongodb+srv://sukritchosri:12345Aa@goldticket.6logoc8.mongodb.net/treasureHunt?retryWrites=true&w=majority&appName=goldticket')
+mongoose.connect('mongodb+srv://sukritchosri:12345@goldticket.6logoc8.mongodb.net/treasureHunt?retryWrites=true&w=majority&appName=goldticket')
   .then(() => console.log('เชื่อมต่อ MongoDB Atlas สำเร็จ'))
   .catch(err => console.error('เกิดข้อผิดพลาดในการเชื่อมต่อ:', err));
 
@@ -25,6 +25,7 @@ const treasureSchema = new mongoose.Schema({
   face: String,
   mission: String,
   discount: String,
+  discountBaht: String,
   totalBoxes: { type: Number, default: 1 }, // จำนวนกล่องทั้งหมด
   remainingBoxes: { type: Number, default: 1 } // จำนวนกล่องที่เหลือ
 });
@@ -32,7 +33,8 @@ const treasureSchema = new mongoose.Schema({
 // สร้างโมเดล Treasure
 const Treasure = mongoose.model('Treasure', treasureSchema);
 
-// API ดึงข้อมูลสมบัติ (แสดงเฉพาะที่ยังมีกล่องเหลือ)
+
+//เเสดงคูปอง
 app.get('/api/treasures', async (req, res) => {
   try {
     // ดึงข้อมูลสมบัติที่ remainingBoxes > 0
@@ -43,19 +45,24 @@ app.get('/api/treasures', async (req, res) => {
   }
 });
 
-// API เพิ่มสมบัติ
+//วางคูปอง
 app.post('/api/treasures', async (req, res) => {
   try {
+  console.log("✅ API /api/treasures ถูกเรียกแล้ว");
+  console.log("Received body:", req.body); // จุดสำคัญ
+    
     const treasure = new Treasure({
       ...req.body,
-      remainingBoxes: req.body.totalBoxes // ตั้งค่าเริ่มต้นเท่ากับ totalBoxes
+      remainingBoxes: req.body.totalBoxes
     });
+
     const newTreasure = await treasure.save();
     res.status(201).json(newTreasure);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
 });
+
 
 // API อัปเดตเมื่อเปิดสมบัติ (ลด remainingBoxes)
 app.patch('/api/treasures/:id', async (req, res) => {
@@ -68,7 +75,7 @@ app.patch('/api/treasures/:id', async (req, res) => {
     );
     
     if (!treasure) {
-      return res.status(404).json({ message: 'ไม่พบสมบัตินี้' });
+      return res.status(404).json({ message: 'ไม่พบคูปองนี้' });
     }
 
     // หาก remainingBoxes เป็น 0 ให้ลบสมบัติออกจากฐานข้อมูล
