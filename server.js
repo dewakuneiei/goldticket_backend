@@ -8,8 +8,12 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
+// เปิดใช้งาน trust proxy เพื่อให้ Express อ่าน IP จาก header 'x-forwarded-for' ได้อย่างถูกต้อง
+// สำคัญมากเมื่อ deploy บนแพลตฟอร์มอย่าง Railway, Heroku, etc.
+app.set('trust proxy', true);
 
-// --- เชื่อมต่อ MongoDB (ใช้เส้นเชื่อมต่อใหม่ตามที่คุณต้องการ) ---
+
+// --- เชื่อมต่อ MongoDB ---
 const mongoURI = 'mongodb://mongo:lAYAnrVBCseEFNaQELuwLeyUfLdjrXCw@mainline.proxy.rlwy.net:59883';
 
 mongoose.connect(mongoURI)
@@ -18,7 +22,7 @@ mongoose.connect(mongoURI)
 
 
 // --- Schema สำหรับ Treasure (โครงสร้างข้อมูลคูปอง) ---
-// ส่วนนี้ยังคงเหมือนเดิม ไม่มีการเปลี่ยนแปลง
+// ส่วนนี้ยังคงเหมือนเดิม
 const treasureSchema = new mongoose.Schema({
   lat: Number,
   lng: Number,
@@ -33,60 +37,90 @@ const treasureSchema = new mongoose.Schema({
   remainingBoxes: { type: Number, default: 1 }
 });
 
-// สร้างโมเดลจาก Schema ของ Treasure
 const Treasure = mongoose.model('Treasure', treasureSchema);
 
 
-// --- Schema ใหม่สำหรับเก็บสถิติ (อัปเดตตามความต้องการใหม่) ---
+// --- Schema สำหรับเก็บสถิติรวม (Global Stats) ---
+// ส่วนนี้ยังคงเหมือนเดิม
 const apiStatSchema = new mongoose.Schema({
-  // ใช้ identifier เป็น 'global-stats' เพื่อให้มี document เดียวสำหรับเก็บสถิติทั้งหมด
   identifier: { type: String, default: 'global-stats', unique: true },
-
-  // สถิติการเปิด/รีโหลดแอป (นับจากการเรียก GET /api/treasures)
   appOpenCount: { type: Number, default: 0 },
-  
-  // สถิติจำนวนสมบัติที่เคยสร้างขึ้นมาทั้งหมด (นับจากการเรียก POST /api/treasures)
   treasuresCreatedCount: { type: Number, default: 0 },
-  
-  // สถิติจำนวนครั้งที่สมบัติถูกเปิดหรือเก็บไป (นับจากการเรียก PATCH /api/treasures/:id)
   treasuresOpenedCount: { type: Number, default: 0 }
-}, { timestamps: true }); // timestamps ทำให้เรารู้ว่ามีการอัปเดตสถิติล่าสุดเมื่อไหร่
+}, { timestamps: true });
 
-// สร้างโมเดลจาก Schema ของ ApiStat
 const ApiStat = mongoose.model('ApiStat', apiStatSchema);
 
 
-// --- Middleware กลางสำหรับนับสถิติการเรียก API ---
-// Middleware นี้ถูกออกแบบมาให้ใช้ซ้ำได้กับทุก API ที่เราต้องการนับ
+// --- [ใหม่] Schema สำหรับเก็บสถิติแยกตาม IP Address ---
+const ipStatSchema = new mongoose.Schema({
+  // ใช้ ipAddress เป็น key หลักที่ไม่ซ้ำกัน
+  ipAddress: { type: String, required: true, unique: true },
+  
+  // จำนวนครั้งที่ IP นี้เรียกดูคูปองทั้งหมด (GET)
+  viewCount: { type: Number, default: 0 },
+  
+  // จำนวนครั้งที่ IP นี้สร้างคูปอง (POST)
+  createCount: { type: Number, default: 0 },
+  
+  // จำนวนครั้งที่ IP นี้เปิดสมบัติ/ทำภารกิจ (PATCH)
+  openCount: { type: Number, default: 0 },
+}, { timestamps: true }); // timestamps ช่วยให้รู้ว่าเจอ IP นี้ครั้งแรกและครั้งล่าสุดเมื่อไหร่
+
+const IpStat = mongoose.model('IpStat', ipStatSchema);
+
+
+// --- Middleware สำหรับนับสถิติรวม (Global Stats) ---
+// Middleware ตัวนี้ยังทำงานเหมือนเดิม
 const countApiCall = (counterName) => {
   return async (req, res, next) => {
     try {
-      // ใช้ findOneAndUpdate และ upsert: true
-      // คำสั่งนี้จะค้นหา document ที่มี identifier: 'global-stats'
-      // - ถ้าเจอ: จะเพิ่มค่า ($inc) ใน field ที่ชื่อตรงกับ counterName ไป 1
-      // - ถ้าไม่เจอ: จะสร้าง document ใหม่ขึ้นมา (upsert: true) พร้อมกับตั้งค่า counterName เป็น 1
       await ApiStat.findOneAndUpdate(
         { identifier: 'global-stats' },
-        { $inc: { [counterName]: 1 } }, // [counterName] คือการใช้ชื่อ field แบบ dynamic ตามที่ส่งเข้ามา
+        { $inc: { [counterName]: 1 } },
         { upsert: true }
       );
-      next(); // สั่งให้ Express ทำงานในลำดับถัดไป (ไปยัง route handler หลัก)
-    } catch (err) {
-      console.error('เกิดข้อผิดพลาดในการนับสถิติ API:', err);
-      // ถึงแม้จะนับพลาด แต่เรายังต้องการให้ API หลักทำงานต่อไป
       next();
+    } catch (err) {
+      console.error('เกิดข้อผิดพลาดในการนับสถิติรวม:', err);
+      next();
+    }
+  };
+};
+
+// --- [ใหม่] Middleware สำหรับนับสถิติแยกตาม IP Address ---
+const trackIpStats = (counterName) => {
+  return async (req, res, next) => {
+    try {
+      // ดึง IP Address จาก request
+      // req.ip จะดึงค่าจาก 'x-forwarded-for' โดยอัตโนมัติเพราะเราตั้งค่า app.set('trust proxy', true)
+      const ip = req.ip;
+
+      if (ip) {
+        // ค้นหา document ของ IP นี้ ถ้าไม่เจอก็สร้างใหม่ (upsert: true)
+        // แล้วเพิ่มค่า ($inc) ใน field ที่ระบุ (เช่น 'viewCount', 'createCount')
+        await IpStat.findOneAndUpdate(
+          { ipAddress: ip },
+          { $inc: { [counterName]: 1 } },
+          { upsert: true, new: true }
+        );
+      }
+      next();
+    } catch (err) {
+      console.error(`เกิดข้อผิดพลาดในการนับสถิติ IP (${req.ip}):`, err);
+      next(); // ให้ระบบทำงานต่อไปแม้จะเกิดข้อผิดพลาด
     }
   };
 };
 
 
 // ========================================================
-// --- ส่วนของเส้นทาง API (Routes) ---
+// --- ส่วนของเส้นทาง API (Routes) ที่อัปเดตแล้ว ---
 // ========================================================
 
 // [GET] เเสดงคูปองทั้งหมด
-// เพิ่ม Middleware 'countApiCall' เพื่อให้นับสถิติ 'appOpenCount' ทุกครั้งที่ถูกเรียก
-app.get('/api/treasures', countApiCall('appOpenCount'), async (req, res) => {
+// เราใส่ Middleware 2 ตัว: ตัวแรกนับสถิติรวม, ตัวที่สองนับสถิติของ IP
+app.get('/api/treasures', countApiCall('appOpenCount'), trackIpStats('viewCount'), async (req, res) => {
   try {
     const treasures = await Treasure.find({ remainingBoxes: { $gt: 0 } });
     res.json(treasures);
@@ -96,17 +130,12 @@ app.get('/api/treasures', countApiCall('appOpenCount'), async (req, res) => {
 });
 
 // [POST] สร้างหรือวางคูปองใหม่
-// เพิ่ม Middleware 'countApiCall' เพื่อให้นับสถิติ 'treasuresCreatedCount' ทุกครั้งที่ถูกเรียก
-app.post('/api/treasures', countApiCall('treasuresCreatedCount'), async (req, res) => {
+app.post('/api/treasures', countApiCall('treasuresCreatedCount'), trackIpStats('createCount'), async (req, res) => {
   try {
-    console.log("✅ API สร้างคูปอง (/api/treasures) ถูกเรียกแล้ว");
-    console.log("ข้อมูลที่ได้รับ:", req.body);
-    
     const treasure = new Treasure({
       ...req.body,
       remainingBoxes: req.body.totalBoxes
     });
-
     const newTreasure = await treasure.save();
     res.status(201).json(newTreasure);
   } catch (err) {
@@ -114,26 +143,20 @@ app.post('/api/treasures', countApiCall('treasuresCreatedCount'), async (req, re
   }
 });
 
-
-// [PATCH] อัปเดตเมื่อผู้ใช้เปิดสมบัติ (ลดจำนวนคูปอง)
-// เพิ่ม Middleware 'countApiCall' เพื่อให้นับสถิติ 'treasuresOpenedCount' ทุกครั้งที่ถูกเรียก
-app.patch('/api/treasures/:id', countApiCall('treasuresOpenedCount'), async (req, res) => {
+// [PATCH] อัปเดตเมื่อผู้ใช้เปิดสมบัติ
+app.patch('/api/treasures/:id', countApiCall('treasuresOpenedCount'), trackIpStats('openCount'), async (req, res) => {
   try {
     const treasure = await Treasure.findByIdAndUpdate(
       req.params.id,
-      { $inc: { remainingBoxes: -1 } }, // ลดจำนวนกล่องที่เหลือลง 1
-      { new: true } // ให้ส่งข้อมูลที่อัปเดตแล้วกลับมา
+      { $inc: { remainingBoxes: -1 } },
+      { new: true }
     );
-    
     if (!treasure) {
       return res.status(404).json({ message: 'ไม่พบคูปองนี้' });
     }
-
-    // หากเปิดจนกล่องสุดท้ายหมด (remainingBoxes เป็น 0) ให้ลบข้อมูลคูปองนี้ทิ้ง
     if (treasure.remainingBoxes <= 0) {
       await Treasure.deleteOne({ _id: treasure._id });
     }
-
     res.json(treasure);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -141,20 +164,22 @@ app.patch('/api/treasures/:id', countApiCall('treasuresOpenedCount'), async (req
 });
 
 
-// [GET] API สำหรับดึงข้อมูลสถิติทั้งหมดมาดู (Optional)
-// คุณสามารถเรียก API เส้นนี้เพื่อดูค่าสถิติทั้งหมดที่เก็บไว้ได้
+// [GET] API สำหรับดึงข้อมูลสถิติรวม
 app.get('/api/stats', async (req, res) => {
     try {
         const stats = await ApiStat.findOne({ identifier: 'global-stats' });
-        if (!stats) {
-            // กรณีที่ยังไม่มีการเรียก API ใดๆ เลย และยังไม่มี document สถิติถูกสร้าง
-            return res.json({
-                appOpenCount: 0,
-                treasuresCreatedCount: 0,
-                treasuresOpenedCount: 0
-            });
-        }
-        res.json(stats);
+        res.json(stats || { appOpenCount: 0, treasuresCreatedCount: 0, treasuresOpenedCount: 0 });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// [GET] [ใหม่] API สำหรับดึงข้อมูลสถิติทั้งหมดที่แยกตาม IP
+app.get('/api/stats/ip', async (req, res) => {
+    try {
+        // ดึงข้อมูล IP ทั้งหมด และเรียงลำดับตามข้อมูลที่อัปเดตล่าสุด
+        const ipStats = await IpStat.find({}).sort({ updatedAt: -1 });
+        res.json(ipStats);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
