@@ -69,7 +69,7 @@ const countApiCall = (counterName) => {
             };
 
             if (counterName === 'appOpenCount') {
-                updateOperation.$set = { lastAppOpen: new Date() }; // <-- แก้ไขให้ถูกต้อง
+                updateOperation.$set = { lastAppOpen: new Date() };
             } else if (counterName === 'treasuresCreatedCount') {
                 updateOperation.$set = { lastTreasureCreated: new Date() };
             } else if (counterName === 'treasuresOpenedCount') {
@@ -105,42 +105,59 @@ app.get('/api/treasures', countApiCall('appOpenCount'), async (req, res) => {
 });
 
 // [POST] สร้างหรือวางคูปองใหม่
-// --- [อัปเดต] เพิ่ม Logic การเช็คและอัปเดตข้อมูลร้านค้า (Store) ---
+// ======================================================================
+// ====[ จุดที่แก้ไข ]====
+// เปลี่ยนจากการใช้ `...req.body` มาเป็นการดึงค่าที่จำเป็นออกมาทีละตัว
+// เพื่อจัดการกับค่า `null` และป้องกันข้อมูลที่ไม่ต้องการ
+// ======================================================================
 app.post('/api/treasures', countApiCall('treasuresCreatedCount'), async (req, res) => {
     try {
-        const { name, ig, face, totalBoxes } = req.body;
+        const { 
+            lat, lng, placementDate, name, ig, face, 
+            mission, discount, discountBaht, totalBoxes 
+        } = req.body;
 
-        // 1. สร้าง Treasure object
-        const treasure = new Treasure({
-            ...req.body,
-            remainingBoxes: totalBoxes
-        });
+        // 1. สร้าง Treasure object อย่างปลอดภัย
+        //    โดยแปลงค่าที่อาจเป็น null ให้เป็นค่า default ที่ถูกต้องตาม Schema
+        const treasureData = {
+            lat: lat,
+            lng: lng,
+            placementDate: placementDate,
+            name: name,
+            ig: ig || '', // ถ้า ig เป็น null/undefined ให้ใช้ '' (String ว่าง) แทน
+            face: face || '',
+            mission: mission || '',
+            discount: discount || '',
+            discountBaht: discountBaht || '', // <<-- นี่คือการแก้ไขปัญหาหลัก
+            totalBoxes: totalBoxes || 1, // ป้องกันกรณีไม่ได้ส่ง totalBoxes มา
+            remainingBoxes: totalBoxes || 1 // เริ่มต้นให้กล่องที่เหลือเท่ากับกล่องทั้งหมด
+        };
+        const treasure = new Treasure(treasureData);
 
         // 2. ตรวจสอบและอัปเดตข้อมูลร้านค้า (Store)
         if (name) {
             const trimmedStoreName = name.trim();
-
-            // ใช้ findOneAndUpdate และ upsert:true เพื่อสร้างถ้าไม่มี หรืออัปเดตถ้ามีอยู่แล้ว
-            // $inc: เพิ่มจำนวน treasures
-            // $setOnInsert: จะทำงานเฉพาะตอนสร้าง document ใหม่เท่านั้น (ป้องกันการเขียนทับข้อมูล ig, face เดิม)
             await Store.findOneAndUpdate(
-                { storeName: trimmedStoreName }, // เงื่อนไขในการค้นหา (case-sensitive)
+                { storeName: trimmedStoreName },
                 {
-                    $inc: { treasures: 1 }, // เพิ่มจำนวนกล่องที่เคยสร้างขึ้น 1
-                    $setOnInsert: { // ตั้งค่าเหล่านี้เฉพาะตอนที่สร้างร้านใหม่เท่านั้น
+                    $inc: { treasures: 1 },
+                    $setOnInsert: {
                         storeName: trimmedStoreName,
                         ig: ig,
                         face: face
                     }
                 },
-                { upsert: true } // ถ้าไม่เจอให้สร้างใหม่ (update + insert = upsert)
+                { upsert: true }
             );
         }
 
         // 3. บันทึก Treasure
         const newTreasure = await treasure.save();
         res.status(201).json(newTreasure);
+
     } catch (err) {
+        // เพิ่มการ log error ที่ server เพื่อช่วยในการดีบัก
+        console.error('Error creating treasure:', err.message);
         res.status(400).json({ message: err.message });
     }
 });
@@ -280,7 +297,7 @@ app.delete('/api/admin/reset-data', async (req, res) => {
         res.json({
             message: 'ล้างข้อมูลทั้งหมดในระบบสำเร็จ',
             treasuresDeleted: treasureDeletionResult.deletedCount,
-            storesDeleted: storeDeletionResult.deletedCount, // ส่งค่าที่ลบไปกลับไปด้วย
+            storesDeleted: storeDeletionResult.deletedCount,
             statsDeleted: statDeletionResult ? 1 : 0
         });
 
