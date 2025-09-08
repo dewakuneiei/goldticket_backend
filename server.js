@@ -17,7 +17,9 @@ mongoose.connect(mongoURI)
 .then(() => console.log('เชื่อมต่อ MongoDB Atlas สำเร็จ'))
 .catch(err => console.error('เกิดข้อผิดพลาดในการเชื่อมต่อ:', err));
 
-// --- Schema สำหรับ Treasure (โครงสร้างข้อมูลคูปอง) ---
+// ======================================================================
+// ====[ จุดที่แก้ไข 1: อัปเดต Schema ให้ยอมรับค่า null ]====
+// ======================================================================
 const treasureSchema = new mongoose.Schema({
     lat: Number,
     lng: Number,
@@ -26,26 +28,26 @@ const treasureSchema = new mongoose.Schema({
     ig: String,
     face: String,
     mission: String,
-    discount: String,
-    discountBaht: String,
+    discount: { type: String, default: null },      // <-- แก้ไขตรงนี้
+    discountBaht: { type: String, default: null }, // <-- และตรงนี้
     totalBoxes: { type: Number, default: 1 },
     remainingBoxes: { type: Number, default: 1 }
 });
 
 const Treasure = mongoose.model('Treasure', treasureSchema);
 
-// --- [เพิ่มใหม่] Schema สำหรับ Store (ร้านค้าที่เข้าร่วม) ---
+// --- Schema สำหรับ Store (ร้านค้าที่เข้าร่วม) ---
 const storeSchema = new mongoose.Schema({
-    storeName: { type: String, required: true, unique: true }, // unique เพื่อให้แน่ใจว่าชื่อร้านไม่ซ้ำ
-    treasures: { type: Number, default: 0 }, // จำนวนกล่องสมบัติทั้งหมดที่เคยสร้างโดยร้านนี้
+    storeName: { type: String, required: true, unique: true },
+    treasures: { type: Number, default: 0 },
     ig: { type: String },
     face: { type: String }
-}, { timestamps: true }); // เพิ่ม timestamps เพื่อดูว่าร้านถูกเพิ่มเมื่อไหร่
+}, { timestamps: true });
 
 const Store = mongoose.model('Store', storeSchema);
 
 
-// --- Schema สำหรับเก็บสถิติ (อัปเดตล่าสุด) ---
+// --- Schema สำหรับเก็บสถิติ ---
 const apiStatSchema = new mongoose.Schema({
     identifier: { type: String, default: 'global-stats', unique: true },
     appOpenCount: { type: Number, default: 0 },
@@ -106,9 +108,7 @@ app.get('/api/treasures', countApiCall('appOpenCount'), async (req, res) => {
 
 // [POST] สร้างหรือวางคูปองใหม่
 // ======================================================================
-// ====[ จุดที่แก้ไข ]====
-// เปลี่ยนจากการใช้ `...req.body` มาเป็นการดึงค่าที่จำเป็นออกมาทีละตัว
-// เพื่อจัดการกับค่า `null` และป้องกันข้อมูลที่ไม่ต้องการ
+// ====[ จุดที่แก้ไข 2: ปรับการสร้าง Object ให้รองรับค่า null ]====
 // ======================================================================
 app.post('/api/treasures', countApiCall('treasuresCreatedCount'), async (req, res) => {
     try {
@@ -118,19 +118,18 @@ app.post('/api/treasures', countApiCall('treasuresCreatedCount'), async (req, re
         } = req.body;
 
         // 1. สร้าง Treasure object อย่างปลอดภัย
-        //    โดยแปลงค่าที่อาจเป็น null ให้เป็นค่า default ที่ถูกต้องตาม Schema
         const treasureData = {
             lat: lat,
             lng: lng,
             placementDate: placementDate,
             name: name,
-            ig: ig || '', // ถ้า ig เป็น null/undefined ให้ใช้ '' (String ว่าง) แทน
+            ig: ig || '',
             face: face || '',
             mission: mission || '',
-            discount: discount || '',
-            discountBaht: discountBaht || '', // <<-- นี่คือการแก้ไขปัญหาหลัก
-            totalBoxes: totalBoxes || 1, // ป้องกันกรณีไม่ได้ส่ง totalBoxes มา
-            remainingBoxes: totalBoxes || 1 // เริ่มต้นให้กล่องที่เหลือเท่ากับกล่องทั้งหมด
+            discount: discount, // ส่งค่าที่ได้รับมาโดยตรง (จะเป็น string หรือ null ก็ได้)
+            discountBaht: discountBaht, // ส่งค่าที่ได้รับมาโดยตรง
+            totalBoxes: totalBoxes || 1,
+            remainingBoxes: totalBoxes || 1
         };
         const treasure = new Treasure(treasureData);
 
@@ -156,7 +155,6 @@ app.post('/api/treasures', countApiCall('treasuresCreatedCount'), async (req, re
         res.status(201).json(newTreasure);
 
     } catch (err) {
-        // เพิ่มการ log error ที่ server เพื่อช่วยในการดีบัก
         console.error('Error creating treasure:', err.message);
         res.status(400).json({ message: err.message });
     }
@@ -176,9 +174,7 @@ app.patch('/api/treasures/:id', countApiCall('treasuresOpenedCount'), async (req
             return res.status(404).json({ message: 'ไม่พบคูปองนี้' });
         }
 
-        // หากเปิดจนกล่องสุดท้ายหมด (remainingBoxes เป็น 0)
         if (treasure.remainingBoxes <= 0) {
-            // นับสถิติว่ามีกล่องถูกใช้จนหมด 1 กล่อง
             await ApiStat.findOneAndUpdate(
                 { identifier: 'global-stats' },
                 {
@@ -187,7 +183,6 @@ app.patch('/api/treasures/:id', countApiCall('treasuresOpenedCount'), async (req
                 },
                 { upsert: true }
             );
-            // จากนั้นจึงลบข้อมูลคูปองนี้ทิ้ง
             await Treasure.deleteOne({ _id: treasure._id });
         }
 
@@ -203,7 +198,6 @@ app.get('/api/stats', async (req, res) => {
     try {
         let stats = await ApiStat.findOne({ identifier: 'global-stats' });
         if (!stats) {
-            // ถ้ายังไม่มี document สถิติ ให้ส่งค่า default กลับไป
             stats = {
                 appOpenCount: 0,
                 treasuresCreatedCount: 0,
@@ -225,7 +219,6 @@ app.get('/api/stats', async (req, res) => {
 // --- ส่วนของ API สำหรับ Admin (ไม่นับสถิติ) ---
 // ========================================================
 
-// [GET] /api/admin/treasures - ดึงข้อมูลสมบัติที่ยังเหลืออยู่ทั้งหมด
 app.get('/api/admin/treasures', async (req, res) => {
     try {
         const treasures = await Treasure.find({ remainingBoxes: { $gt: 0 } })
@@ -237,7 +230,6 @@ app.get('/api/admin/treasures', async (req, res) => {
     }
 });
 
-// [GET] /api/admin/treasures/{id} - ดึงข้อมูลสมบัติชิ้นเดียว
 app.get('/api/admin/treasures/:id', async (req, res) => {
     try {
         const treasure = await Treasure.findById(req.params.id);
@@ -250,19 +242,15 @@ app.get('/api/admin/treasures/:id', async (req, res) => {
     }
 });
 
-// --- [เพิ่มใหม่] API สำหรับ Admin เพื่อจัดการร้านค้า ---
-
-// [GET] /api/admin/stores - ดึงข้อมูลร้านค้าที่เคยเข้าร่วมทั้งหมด
 app.get('/api/admin/stores', async (req, res) => {
     try {
-        const stores = await Store.find({}).sort({ storeName: 1 }); // เรียงตามชื่อร้าน
+        const stores = await Store.find({}).sort({ storeName: 1 });
         res.json(stores);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
 });
 
-// [GET] /api/admin/stores/{id} - ดึงข้อมูลร้านค้าเดียว
 app.get('/api/admin/stores/:id', async (req, res) => {
     try {
         const store = await Store.findById(req.params.id);
@@ -275,9 +263,6 @@ app.get('/api/admin/stores/:id', async (req, res) => {
     }
 });
 
-
-// [DELETE] /api/admin/reset-data - ล้างข้อมูลทั้งหมดในระบบ (ต้องใช้รหัสผ่าน)
-// --- [อัปเดต] เพิ่มการล้างข้อมูลร้านค้า (Store) ด้วย ---
 app.delete('/api/admin/reset-data', async (req, res) => {
     const { password } = req.body;
     const adminPassword = process.env.ADMIN_RESET_PASSWORD;
@@ -287,11 +272,8 @@ app.delete('/api/admin/reset-data', async (req, res) => {
     }
 
     try {
-        // ลบข้อมูลสมบัติทั้งหมด
         const treasureDeletionResult = await Treasure.deleteMany({});
-        // ลบข้อมูลร้านค้าทั้งหมด
         const storeDeletionResult = await Store.deleteMany({});
-        // ลบข้อมูลสถิติ
         const statDeletionResult = await ApiStat.findOneAndDelete({ identifier: 'global-stats' });
 
         res.json({
@@ -305,7 +287,6 @@ app.delete('/api/admin/reset-data', async (req, res) => {
         res.status(500).json({ message: 'เกิดข้อผิดพลาดระหว่างการล้างข้อมูล', error: err.message });
     }
 });
-
 
 // --- เริ่มการทำงานของเซิร์ฟเวอร์ ---
 const PORT = 3001;
