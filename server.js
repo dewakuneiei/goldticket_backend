@@ -1,6 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const bodyParser = require('body-parser'); // body-parser is built into express now, but keeping for compatibility if needed.
+const bodyParser = require('body-parser');
 const cors = require('cors');
 require('dotenv').config();
 
@@ -8,7 +8,7 @@ const app = express();
 
 // Middleware พื้นฐาน
 app.use(cors());
-app.use(express.json()); // ใช้ express.json() แทน bodyParser.json() ซึ่งเป็นวิธีที่ทันสมัยกว่า
+app.use(bodyParser.json());
 
 // --- เชื่อมต่อ MongoDB ---
 const mongoURI = 'mongodb://mongo:lAYAnrVBCseEFNaQELuwLeyUfLdjrXCw@mainline.proxy.rlwy.net:59883';
@@ -17,55 +17,33 @@ mongoose.connect(mongoURI)
 .then(() => console.log('เชื่อมต่อ MongoDB Atlas สำเร็จ'))
 .catch(err => console.error('เกิดข้อผิดพลาดในการเชื่อมต่อ:', err));
 
-// ========================================================
-// --- ส่วนของ Schemas ---
-// ========================================================
-
-// --- [เพิ่มใหม่] Schema สำหรับสร้าง Auto-Increment ID ---
-const counterSchema = new mongoose.Schema({
-    _id: { type: String, required: true },
-    seq: { type: Number, default: 0 }
-});
-const Counter = mongoose.model('Counter', counterSchema);
-
-// ฟังก์ชันสำหรับสร้าง ID อัตโนมัติ
-async function getNextSequenceValue(sequenceName) {
-    const sequenceDocument = await Counter.findByIdAndUpdate(
-        sequenceName,
-        { $inc: { seq: 1 } },
-        { new: true, upsert: true }
-    );
-    return sequenceDocument.seq;
-}
-
-// --- [เพิ่มใหม่] Schema สำหรับ Store (ร้านค้า) ---
-const storeSchema = new mongoose.Schema({
-    storeId: { type: Number, unique: true, required: true },
-    storeName: { type: String, required: true, unique: true, trim: true },
-    treasuresCount: { type: Number, default: 0 }, // จำนวนคูปองทั้งหมดที่เคยสร้างโดยร้านนี้
-    ig: String,
-    face: String
-});
-const Store = mongoose.model('Store', storeSchema);
-
-
-// --- [อัปเดต] Schema สำหรับ Treasure (เพิ่ม storeId) ---
+// --- Schema สำหรับ Treasure (โครงสร้างข้อมูลคูปอง) ---
 const treasureSchema = new mongoose.Schema({
     lat: Number,
     lng: Number,
     placementDate: String,
-    name: String, // ชื่อร้าน (ยังคงเก็บไว้เพื่อความสะดวก แต่ตัวหลักคือ storeId)
+    name: String, // ชื่อร้าน
     ig: String,
     face: String,
     mission: String,
     discount: String,
     discountBaht: String,
     totalBoxes: { type: Number, default: 1 },
-    remainingBoxes: { type: Number, default: 1 },
-    storeId: { type: Number, index: true } // [เพิ่มใหม่] ใช้สำหรับอ้างอิงถึง Store
+    remainingBoxes: { type: Number, default: 1 }
 });
 
 const Treasure = mongoose.model('Treasure', treasureSchema);
+
+// --- [เพิ่มใหม่] Schema สำหรับ Store (ร้านค้าที่เข้าร่วม) ---
+const storeSchema = new mongoose.Schema({
+    storeName: { type: String, required: true, unique: true }, // unique เพื่อให้แน่ใจว่าชื่อร้านไม่ซ้ำ
+    treasures: { type: Number, default: 0 }, // จำนวนกล่องสมบัติทั้งหมดที่เคยสร้างโดยร้านนี้
+    ig: { type: String },
+    face: { type: String }
+}, { timestamps: true }); // เพิ่ม timestamps เพื่อดูว่าร้านถูกเพิ่มเมื่อไหร่
+
+const Store = mongoose.model('Store', storeSchema);
+
 
 // --- Schema สำหรับเก็บสถิติ (อัปเดตล่าสุด) ---
 const apiStatSchema = new mongoose.Schema({
@@ -91,7 +69,7 @@ const countApiCall = (counterName) => {
             };
 
             if (counterName === 'appOpenCount') {
-                updateOperation.$set = { lastAppOpen: new Date() };
+                updateOperation.$set = { lastAppOpen: new Date() }; // <-- แก้ไขให้ถูกต้อง
             } else if (counterName === 'treasuresCreatedCount') {
                 updateOperation.$set = { lastTreasureCreated: new Date() };
             } else if (counterName === 'treasuresOpenedCount') {
@@ -120,63 +98,49 @@ const countApiCall = (counterName) => {
 app.get('/api/treasures', countApiCall('appOpenCount'), async (req, res) => {
     try {
         const treasures = await Treasure.find({ remainingBoxes: { $gt: 0 } });
-        // ข้อมูลที่ส่งกลับไปจะมี field 'storeId' หรือเป็น undefined (สำหรับข้อมูลเก่า) โดยอัตโนมัติ
-        // Frontend สามารถเช็คได้ว่า if (treasure.storeId) { ... }
         res.json(treasures);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
 });
 
-// [POST] สร้างหรือวางคูปองใหม่ (*** LOGIC อัปเดตหลักอยู่ที่นี่ ***)
+// [POST] สร้างหรือวางคูปองใหม่
+// --- [อัปเดต] เพิ่ม Logic การเช็คและอัปเดตข้อมูลร้านค้า (Store) ---
 app.post('/api/treasures', countApiCall('treasuresCreatedCount'), async (req, res) => {
-    const { name, ig, face, ...treasureData } = req.body;
-
-    if (!name || name.trim() === '') {
-        return res.status(400).json({ message: 'กรุณาระบุชื่อร้าน (name)' });
-    }
-
-    const trimmedStoreName = name.trim();
-    let storeIdToAssign;
-
     try {
-        // 1. ค้นหาร้านค้าจากชื่อที่ trim แล้ว (case-sensitive)
-        let store = await Store.findOne({ storeName: trimmedStoreName });
+        const { name, ig, face, totalBoxes } = req.body;
 
-        if (store) {
-            // 2.1. ถ้าร้านค้ามีอยู่แล้ว: อัปเดตจำนวนคูปองและใช้ storeId เดิม
-            store.treasuresCount += 1;
-            await store.save();
-            storeIdToAssign = store.storeId;
-        } else {
-            // 2.2. ถ้าร้านค้ายังไม่มี: สร้างร้านใหม่พร้อม storeId ใหม่
-            const newStoreId = await getNextSequenceValue('storeId');
-            store = new Store({
-                storeId: newStoreId,
-                storeName: trimmedStoreName,
-                treasuresCount: 1, // สร้างครั้งแรกนับเป็น 1
-                ig: ig,
-                face: face
-            });
-            await store.save();
-            storeIdToAssign = newStoreId;
-        }
-
-        // 3. สร้าง Treasure ใหม่พร้อมกับ storeId ที่ได้มา
+        // 1. สร้าง Treasure object
         const treasure = new Treasure({
-            ...treasureData,
-            name: trimmedStoreName, // เก็บชื่อที่ trim แล้ว
-            ig: ig,
-            face: face,
-            remainingBoxes: treasureData.totalBoxes,
-            storeId: storeIdToAssign // *** กำหนด storeId ให้กับคูปอง ***
+            ...req.body,
+            remainingBoxes: totalBoxes
         });
 
+        // 2. ตรวจสอบและอัปเดตข้อมูลร้านค้า (Store)
+        if (name) {
+            const trimmedStoreName = name.trim();
+
+            // ใช้ findOneAndUpdate และ upsert:true เพื่อสร้างถ้าไม่มี หรืออัปเดตถ้ามีอยู่แล้ว
+            // $inc: เพิ่มจำนวน treasures
+            // $setOnInsert: จะทำงานเฉพาะตอนสร้าง document ใหม่เท่านั้น (ป้องกันการเขียนทับข้อมูล ig, face เดิม)
+            await Store.findOneAndUpdate(
+                { storeName: trimmedStoreName }, // เงื่อนไขในการค้นหา (case-sensitive)
+                {
+                    $inc: { treasures: 1 }, // เพิ่มจำนวนกล่องที่เคยสร้างขึ้น 1
+                    $setOnInsert: { // ตั้งค่าเหล่านี้เฉพาะตอนที่สร้างร้านใหม่เท่านั้น
+                        storeName: trimmedStoreName,
+                        ig: ig,
+                        face: face
+                    }
+                },
+                { upsert: true } // ถ้าไม่เจอให้สร้างใหม่ (update + insert = upsert)
+            );
+        }
+
+        // 3. บันทึก Treasure
         const newTreasure = await treasure.save();
         res.status(201).json(newTreasure);
-
     } catch (err) {
-        // จัดการกับ error ที่อาจเกิดจากการ save ไม่สำเร็จ (เช่น unique key violation)
         res.status(400).json({ message: err.message });
     }
 });
@@ -185,20 +149,19 @@ app.post('/api/treasures', countApiCall('treasuresCreatedCount'), async (req, re
 // [PATCH] อัปเดตเมื่อผู้ใช้เปิดสมบัติ (ลดจำนวนคูปอง)
 app.patch('/api/treasures/:id', countApiCall('treasuresOpenedCount'), async (req, res) => {
     try {
-        // ใช้ findOneAndUpdate แทน findByIdAndUpdate เพื่อให้ได้ document ก่อนการอัปเดต
-        // ซึ่งจะทำให้เรามั่นใจว่าเราลบเอกสารที่ถูกต้อง
         const treasure = await Treasure.findByIdAndUpdate(
             req.params.id,
             { $inc: { remainingBoxes: -1 } },
-            { new: true } // new: true เพื่อให้ return document หลัง update
+            { new: true }
         );
 
         if (!treasure) {
             return res.status(404).json({ message: 'ไม่พบคูปองนี้' });
         }
 
-        // หากเปิดจนกล่องสุดท้ายหมด (remainingBoxes เป็น 0 หรือน้อยกว่า)
+        // หากเปิดจนกล่องสุดท้ายหมด (remainingBoxes เป็น 0)
         if (treasure.remainingBoxes <= 0) {
+            // นับสถิติว่ามีกล่องถูกใช้จนหมด 1 กล่อง
             await ApiStat.findOneAndUpdate(
                 { identifier: 'global-stats' },
                 {
@@ -223,6 +186,7 @@ app.get('/api/stats', async (req, res) => {
     try {
         let stats = await ApiStat.findOne({ identifier: 'global-stats' });
         if (!stats) {
+            // ถ้ายังไม่มี document สถิติ ให้ส่งค่า default กลับไป
             stats = {
                 appOpenCount: 0,
                 treasuresCreatedCount: 0,
@@ -240,7 +204,6 @@ app.get('/api/stats', async (req, res) => {
     }
 });
 
-
 // ========================================================
 // --- ส่วนของ API สำหรับ Admin (ไม่นับสถิติ) ---
 // ========================================================
@@ -249,7 +212,7 @@ app.get('/api/stats', async (req, res) => {
 app.get('/api/admin/treasures', async (req, res) => {
     try {
         const treasures = await Treasure.find({ remainingBoxes: { $gt: 0 } })
-            .select('_id placementDate name totalBoxes remainingBoxes storeId') // เพิ่ม storeId
+            .select('_id placementDate name totalBoxes remainingBoxes')
             .sort({ placementDate: -1 });
         res.json(treasures);
     } catch (err) {
@@ -270,39 +233,34 @@ app.get('/api/admin/treasures/:id', async (req, res) => {
     }
 });
 
-// --- [API Admin ใหม่] ---
+// --- [เพิ่มใหม่] API สำหรับ Admin เพื่อจัดการร้านค้า ---
 
-// [GET] /api/admin/stores - ดึงข้อมูลร้านค้าทั้งหมดที่เคยเข้าร่วม
+// [GET] /api/admin/stores - ดึงข้อมูลร้านค้าที่เคยเข้าร่วมทั้งหมด
 app.get('/api/admin/stores', async (req, res) => {
     try {
-        const stores = await Store.find({}).sort({ storeId: 1 }); // เรียงตาม storeId
+        const stores = await Store.find({}).sort({ storeName: 1 }); // เรียงตามชื่อร้าน
         res.json(stores);
     } catch (err) {
-        res.status(500).json({ message: 'เกิดข้อผิดพลาดในการดึงข้อมูลร้านค้า', error: err.message });
+        res.status(500).json({ message: err.message });
     }
 });
 
-// [GET] /api/admin/stores/:storeId/treasures - ดึงคูปองที่ยังเหลืออยู่ทั้งหมดของร้านค้าที่ระบุ
-app.get('/api/admin/stores/:storeId/treasures', async (req, res) => {
+// [GET] /api/admin/stores/{id} - ดึงข้อมูลร้านค้าเดียว
+app.get('/api/admin/stores/:id', async (req, res) => {
     try {
-        const storeIdNum = parseInt(req.params.storeId, 10);
-        if (isNaN(storeIdNum)) {
-            return res.status(400).json({ message: 'storeId ไม่ถูกต้อง' });
+        const store = await Store.findById(req.params.id);
+        if (!store) {
+            return res.status(404).json({ message: 'ไม่พบข้อมูลร้านค้าตาม ID ที่ระบุ' });
         }
-
-        const treasures = await Treasure.find({
-            storeId: storeIdNum,
-            remainingBoxes: { $gt: 0 } // แสดงเฉพาะกล่องที่ยังไม่หมดอายุ
-        }).sort({ placementDate: -1 });
-
-        res.json(treasures);
+        res.json(store);
     } catch (err) {
-        res.status(500).json({ message: 'เกิดข้อผิดพลาดในการดึงข้อมูลคูปองของร้านค้า', error: err.message });
+        res.status(500).json({ message: err.message });
     }
 });
 
 
 // [DELETE] /api/admin/reset-data - ล้างข้อมูลทั้งหมดในระบบ (ต้องใช้รหัสผ่าน)
+// --- [อัปเดต] เพิ่มการล้างข้อมูลร้านค้า (Store) ด้วย ---
 app.delete('/api/admin/reset-data', async (req, res) => {
     const { password } = req.body;
     const adminPassword = process.env.ADMIN_RESET_PASSWORD;
@@ -314,19 +272,16 @@ app.delete('/api/admin/reset-data', async (req, res) => {
     try {
         // ลบข้อมูลสมบัติทั้งหมด
         const treasureDeletionResult = await Treasure.deleteMany({});
-        // ลบข้อมูลสถิติ
-        const statDeletionResult = await ApiStat.deleteMany({});
-        // [เพิ่มใหม่] ลบข้อมูลร้านค้า
+        // ลบข้อมูลร้านค้าทั้งหมด
         const storeDeletionResult = await Store.deleteMany({});
-        // [เพิ่มใหม่] ลบข้อมูลตัวนับ ID
-        const counterDeletionResult = await Counter.deleteMany({});
+        // ลบข้อมูลสถิติ
+        const statDeletionResult = await ApiStat.findOneAndDelete({ identifier: 'global-stats' });
 
         res.json({
             message: 'ล้างข้อมูลทั้งหมดในระบบสำเร็จ',
             treasuresDeleted: treasureDeletionResult.deletedCount,
-            statsDeleted: statDeletionResult.deletedCount,
-            storesDeleted: storeDeletionResult.deletedCount,
-            countersDeleted: counterDeletionResult.deletedCount
+            storesDeleted: storeDeletionResult.deletedCount, // ส่งค่าที่ลบไปกลับไปด้วย
+            statsDeleted: statDeletionResult ? 1 : 0
         });
 
     } catch (err) {
@@ -334,8 +289,9 @@ app.delete('/api/admin/reset-data', async (req, res) => {
     }
 });
 
+
 // --- เริ่มการทำงานของเซิร์ฟเวอร์ ---
-const PORT = process.env.PORT || 3001;
+const PORT = 3001;
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
