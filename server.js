@@ -49,6 +49,17 @@ const apiStatSchema = new mongoose.Schema({
 
 const ApiStat = mongoose.model('ApiStat', apiStatSchema);
 
+// --- Schema สำหรับ Store ---
+const storeSchema = new mongoose.Schema({
+  storeName: { type: String, unique: true },
+  storeFc: { type: String, default: null },
+  storeIg: { type: String, default: null },
+  treasure: { type: Number, default: 1 }
+});
+
+const Store = mongoose.model('Store', storeSchema);
+
+
 // --- Middleware กลางสำหรับนับสถิติการเรียก API ---
 const countApiCall = (counterName) => {
   return async (req, res, next) => {
@@ -101,6 +112,25 @@ app.post('/api/treasures', countApiCall('treasuresCreatedCount'), async (req, re
       remainingBoxes: req.body.totalBoxes
     });
     const newTreasure = await treasure.save();
+
+    // ✅ อัปเดต Store เมื่อมี Treasure ใหม่
+    const store = await Store.findOne({ storeName: newTreasure.name });
+    if (store) {
+      // อัปเดต treasure count + social ถ้ามีค่าใหม่
+      store.treasure += 1;
+      if (newTreasure.face) store.storeFc = newTreasure.face;
+      if (newTreasure.ig) store.storeIg = newTreasure.ig;
+      await store.save();
+    } else {
+      // ถ้าไม่มี store นี้ -> สร้างใหม่
+      await Store.create({
+        storeName: newTreasure.name,
+        storeFc: newTreasure.face || null,
+        storeIg: newTreasure.ig || null,
+        treasure: 1
+      });
+    }
+
     res.status(201).json(newTreasure);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -221,6 +251,29 @@ app.delete('/api/admin/reset-data', async (req, res) => {
         res.status(500).json({ message: 'เกิดข้อผิดพลาดระหว่างการล้างข้อมูล', error: err.message });
     }
 });
+
+// [GET] แสดงรายชื่อ store ทั้งหมด
+app.get('/api/stores', async (req, res) => {
+  try {
+    const stores = await Store.find().select('_id storeName treasure');
+    res.json(stores);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// [GET] แสดงรายละเอียด store ตาม id
+app.get('/api/stores/:id', async (req, res) => {
+  try {
+    const store = await Store.findById(req.params.id);
+    if (!store) return res.status(404).json({ message: 'ไม่พบร้านนี้' });
+    res.json(store);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+
 
 
 // --- เริ่มการทำงานของเซิร์ฟเวอร์ ---
