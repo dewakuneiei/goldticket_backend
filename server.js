@@ -193,11 +193,12 @@ authRouter.post('/forgot-password', async (req, res) => {
             },
         });
 
-        const resetURL = `http://${req.headers.host}/reset-password.html?token=${token}`;
+        const clientBaseURL = process.env.clientBaseURL || 'http://127.0.0.1:5501';
+        const resetURL = `${clientBaseURL}/reset-password.html?token=${token}`;
 
         const mailOptions = {
             to: user.email,
-            from: `Your App Name <${process.env.EMAIL_USER}>`,
+            from: `ล่าคูปอง <${process.env.EMAIL_USER}>`,
             subject: 'คำขอรีเซ็ตรหัสผ่าน',
             text: `คุณได้รับอีเมลนี้เนื่องจากมีการร้องขอรีเซ็ตรหัสผ่านสำหรับบัญชีของคุณ\n\n` +
                   `กรุณาคลิกลิงก์ต่อไปนี้ หรือคัดลอกไปวางในเบราว์เซอร์ของคุณเพื่อดำเนินการต่อ:\n\n` +
