@@ -16,7 +16,8 @@ const app = express();
 // =============================================================================
 const allowedOrigins = [
   'https://lacoupong.vercel.app',
-  'https://lacoupong-website-admin.vercel.app'
+  'https://lacoupong-website-admin.vercel.app',
+  'http://127.0.0.1:5500'
 ];
 
 const corsOptions = {
