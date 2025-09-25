@@ -417,7 +417,7 @@ authRouter.post('/login', async (req, res) => {
     );
     
     const payload = { id: user._id, username: user.username, role: user.role };
-    const expiresIn = user.role === 'admin' ? '6h' : '3d';
+    const expiresIn = user.role === 'admin' ? '6h' : '7d';
     const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn });
     
     res.json({
