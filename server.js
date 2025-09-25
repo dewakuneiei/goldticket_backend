@@ -23,9 +23,13 @@ const corsOptions = {
     origin: function (origin, callback) {
         // Allow requests with no origin (like mobile apps, curl, Postman) or from whitelisted origins
         if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+            // This origin is allowed.
             callback(null, true);
         } else {
-            callback(new Error('Not allowed by CORS'));
+            // This origin is NOT allowed.
+            // By passing `false`, the `cors` middleware will handle the rejection gracefully
+            // without crashing the server.
+            callback(null, false);
         }
     },
     methods: 'GET, POST, PATCH, DELETE, OPTIONS',
