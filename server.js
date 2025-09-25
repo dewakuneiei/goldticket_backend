@@ -723,7 +723,8 @@ app.delete('/api/admin/reset-data', adminAuthMiddleware, async (req, res) => {
 
 app.get('/api/admin/users-overview', adminAuthMiddleware, async (req, res) => {
     try {
-        const users = await UserAuthData.find().select('gender ageRange');
+        // เพิ่มเงื่อนไข { role: { $ne: 'admin' } } เพื่อไม่นับ admin
+        const users = await UserAuthData.find({ role: { $ne: 'admin' } }).select('gender ageRange');
         res.json(users);
     } catch (err) {
         res.status(500).json({ message: err.message });
@@ -733,9 +734,18 @@ app.get('/api/admin/users-overview', adminAuthMiddleware, async (req, res) => {
 app.get('/api/admin/user-reports', adminAuthMiddleware, async (req, res) => {
     try {
         const reports = await UserAuthReport.find()
-            .populate('userId', 'username') // ดึง username มาแสดงผลด้วย
+            .populate({
+                path: 'userId',
+                select: 'username role',
+                // เพิ่มเงื่อนไข match เพื่อกรอง user ที่มี role ไม่ใช่ 'admin'
+                match: { role: { $ne: 'admin' } }
+            })
             .sort({ lastLogin: -1 });
-        res.json(reports);
+
+        // กรองผลลัพธ์สุดท้ายเพื่อให้แน่ใจว่าไม่มี report ที่ userId เป็น null (เพราะไม่ match)
+        const filteredReports = reports.filter(report => report.userId !== null);
+
+        res.json(filteredReports);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
