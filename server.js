@@ -290,23 +290,29 @@ authRouter.post('/forgot-password', async (req, res) => {
     const user = await UserAuthData.findOne({ email: email.toLowerCase() });
 
     if (!user) {
+      // It's good practice not to reveal whether an email exists for security reasons.
       return res.status(200).json({ message: 'หากอีเมลนี้มีอยู่ในระบบ ลิงก์สำหรับรีเซ็ตรหัสผ่านจะถูกส่งไปให้' });
     }
 
     const token = crypto.randomBytes(20).toString('hex');
     
     user.passwordResetToken = token;
-    user.passwordResetExpires = Date.now() + 3600000;
+    user.passwordResetExpires = Date.now() + 3600000; // Token valid for 1 hour
     await user.save();
 
-    const transporter = nodemailer.createTransporter({
+    // FIX IS HERE: Changed createTransporter to createTransport
+    const transporter = nodemailer.createTransport({
       host: process.env.EMAIL_HOST,
       port: process.env.EMAIL_PORT,
-      secure: false,
+      secure: process.env.EMAIL_SECURE === 'true', // Use 'true'/'false' string in .env
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS,
       },
+      // Optional: Add TLS options if you encounter issues, especially with self-signed certs or specific providers
+      // tls: {
+      //   rejectUnauthorized: false
+      // }
     });
 
     const clientBaseURL = process.env.clientBaseURL || 'http://127.0.0.1:5501';
@@ -314,8 +320,17 @@ authRouter.post('/forgot-password', async (req, res) => {
 
     const mailOptions = {
       to: user.email,
-      from: `ล่าคูปอง <${process.env.EMAIL_USER}>`,
+      from: `ล่าคูปอง <${process.env.EMAIL_USER}>`, // Make sure EMAIL_USER is a valid sender address
       subject: 'คำขอรีเซ็ตรหัสผ่าน',
+      html: `
+        <p>คุณได้รับอีเมลนี้เนื่องจากมีการร้องขอรีเซ็ตรหัสผ่านสำหรับบัญชีของคุณ</p>
+        <p>กรุณาคลิกลิงก์ต่อไปนี้ หรือคัดลอกไปวางในเบราว์เซอร์ของคุณเพื่อดำเนินการต่อ:</p>
+        <p><a href="${resetURL}">รีเซ็ตรหัสผ่านของคุณ</a></p>
+        <p>ลิงก์นี้จะหมดอายุภายใน 1 ชั่วโมง</p>
+        <p>หากคุณไม่ได้เป็นผู้ร้องขอ กรุณาไม่ต้องดำเนินการใดๆ และรหัสผ่านของคุณจะยังคงปลอดภัย</p>
+        <p>ขอบคุณ</p>
+        <p>ทีมงานล่าคูปอง</p>
+      `,
       text: `คุณได้รับอีเมลนี้เนื่องจากมีการร้องขอรีเซ็ตรหัสผ่านสำหรับบัญชีของคุณ\n\n` +
             `กรุณาคลิกลิงก์ต่อไปนี้ หรือคัดลอกไปวางในเบราว์เซอร์ของคุณเพื่อดำเนินการต่อ:\n\n` +
             `${resetURL}\n\n` +
