@@ -721,6 +721,26 @@ app.delete('/api/admin/reset-data', adminAuthMiddleware, async (req, res) => {
   }
 });
 
+app.get('/api/admin/users-overview', adminAuthMiddleware, async (req, res) => {
+    try {
+        const users = await UserAuthData.find().select('gender ageRange');
+        res.json(users);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+app.get('/api/admin/user-reports', adminAuthMiddleware, async (req, res) => {
+    try {
+        const reports = await UserAuthReport.find()
+            .populate('userId', 'username') // ดึง username มาแสดงผลด้วย
+            .sort({ lastLogin: -1 });
+        res.json(reports);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
 // =============================================================================
 // SERVER INITIALIZATION
 // =============================================================================
