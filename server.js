@@ -12,9 +12,37 @@ require('dotenv').config();
 
 const app = express();
 
-// Middleware
-app.use(cors());
+// --- Whitelist of allowed origins ---
+const allowedOrigins = [
+    'https://lacoupong.vercel.app', // Your production frontend on Vercel
+    'http://localhost:5501',        // Your local development frontend (adjust port if needed)
+    'http://127.0.0.1:5501'         // Also for local development
+];
+
+const corsOptions = {
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps, curl, Postman) or from whitelisted origins
+        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    methods: 'GET, POST, PATCH, DELETE, OPTIONS',
+    allowedHeaders: 'Content-Type, Authorization',
+    credentials: true
+};
+
+// --- Middleware Configuration ---
+
+// 1. Enable CORS for all routes with the defined options.
+//    This single line is sufficient to handle simple and pre-flighted requests (OPTIONS).
+app.use(cors(corsOptions));
+
+// 2. Enable JSON body parsing.
 app.use(bodyParser.json());
+
+// 3. Trust proxy headers (important for services like Railway or Heroku).
 app.set('trust proxy', true);
 
 // Connect to MongoDB
