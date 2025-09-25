@@ -299,7 +299,7 @@ authRouter.post('/forgot-password', async (req, res) => {
     user.passwordResetExpires = Date.now() + 3600000; // Token valid for 1 hour
     await user.save();
 
-    // FIX IS HERE: Changed createTransporter to createTransport
+    // FIX APPLIED: Changed `nodemailer.createTransporter` to `nodemailer.createTransport`
     const transporter = nodemailer.createTransport({
       host: process.env.EMAIL_HOST,
       port: process.env.EMAIL_PORT,
