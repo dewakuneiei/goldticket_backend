@@ -302,8 +302,8 @@ authRouter.post('/forgot-password', async (req, res) => {
     // FIX APPLIED: Changed `nodemailer.createTransporter` to `nodemailer.createTransport`
     const transporter = nodemailer.createTransport({
       host: process.env.EMAIL_HOST,
-      port: process.env.EMAIL_PORT,
-      secure: process.env.EMAIL_SECURE === 'true', // Use 'true'/'false' string in .env
+      port: 587, // Hardcoded to 587 as requested
+      secure: false, // Hardcoded to false for port 587 (typically uses STARTTLS)
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS,
