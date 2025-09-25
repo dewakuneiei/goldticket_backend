@@ -765,6 +765,43 @@ app.get('/api/admin/user-reports', adminAuthMiddleware, async (req, res) => {
     }
 });
 
+// Endpoint ใหม่สำหรับดึงข้อมูลเวลารวมทั้งหมด
+app.get('/api/admin/stats/total-time', adminAuthMiddleware, async (req, res) => {
+    try {
+        const visitorTimeResult = await Visitor.aggregate([
+            { $group: { _id: null, totalSeconds: { $sum: '$totalTimeOnPageSeconds' } } }
+        ]);
+
+        const userReports = await UserAuthReport.find().populate({
+            path: 'userId',
+            select: 'role',
+            match: { role: { $ne: 'admin' } }
+        });
+        
+        const userTimeInSeconds = userReports
+            .filter(report => report.userId !== null) // กรอง admin ออก
+            .reduce((sum, report) => sum + report.totalTimeOnPageSeconds, 0);
+
+        res.json({
+            visitorTotalSeconds: visitorTimeResult.length > 0 ? visitorTimeResult[0].totalSeconds : 0,
+            userTotalSeconds: userTimeInSeconds
+        });
+
+    } catch (err) {
+        res.status(500).json({ message: 'Server Error', error: err.message });
+    }
+});
+
+// Endpoint ใหม่สำหรับดึง Visitors ทั้งหมด (สำหรับหน้า Fullscreen)
+app.get('/api/admin/visitors/all', adminAuthMiddleware, async (req, res) => {
+    try {
+        const visitors = await Visitor.find().sort({ lastVisit: -1 });
+        res.json(visitors);
+    } catch (err) {
+        res.status(500).json({ message: 'Server Error', error: err.message });
+    }
+});
+
 // =============================================================================
 // SERVER INITIALIZATION
 // =============================================================================
