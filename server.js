@@ -17,7 +17,9 @@ const app = express();
 const allowedOrigins = [
   'https://lacoupong.vercel.app',
   'https://lacoupong-website-admin.vercel.app',
-  'http://127.0.0.1:5500'
+  'http://127.0.0.1:5500',
+  'http://127.0.0.1:5501', // Added standard Live Server port
+  'http://localhost:3000'
 ];
 
 const corsOptions = {
@@ -28,7 +30,7 @@ const corsOptions = {
       callback(null, false);
     }
   },
-  methods: 'GET, POST, PATCH, DELETE, OPTIONS',
+  methods: 'GET, POST, PATCH, DELETE, OPTIONS, PUT', // Added PUT for avatar updates
   allowedHeaders: 'Content-Type, Authorization',
   credentials: true
 };
@@ -51,6 +53,20 @@ mongoose.connect(mongoURI)
   })
   .catch(err => console.error('MongoDB Connection Error:', err));
 
+const SECONDS_PER_COIN = parseInt(process.env.SECONDS_PER_COIN) || 12; // 1 minute = 5 coint (12*5 = 60)  
+
+// --- SHOP CONFIGURATION ---
+const SHOP_ITEMS = [
+    // SKINS (มี Effect พิเศษ)
+    { id: 'skin_alien', name: 'Alien Skin 👽', type: 'skin', value: '#84cc16', price: 100, description: 'ผิวสีเขียว เรืองแสงได้ในที่มืด', isPremium: true },
+    { id: 'skin_demon', name: 'Red Demon 👹', type: 'skin', value: '#ef4444', price: 100, description: 'ผิวสีแดง พร้อมออร่าความร้อน', isPremium: true },
+    { id: 'skin_gold', name: 'Golden Body 🌟', type: 'skin', value: 'url(#goldGradient)', price: 125, description: 'ตัวทองคำแท้ 24K', isPremium: true }, // SVG Gradient
+
+    // SHIRTS
+    { id: 'shirt_void', name: 'Void Suit 🌑', type: 'shirt', value: '#111827', price: 50, description: 'ชุดดำสนิทเหมือนหลุมดำ' },
+    { id: 'shirt_neon', name: 'Neon Pink 💖', type: 'shirt', value: '#ec4899', price: 75, description: 'เสื้อชมพูสะท้อนแสง' },
+    { id: 'shirt_rainbow', name: 'Rainbow Tee 🌈', type: 'shirt', value: 'url(#rainbowGradient)', price: 90, description: 'เสื้อลายสายรุ้งสดใส' }
+];
 // =============================================================================
 // MONGOOSE SCHEMAS
 // =============================================================================
@@ -126,6 +142,45 @@ const userAuthReportSchema = new mongoose.Schema({
   lastAppOpen: { type: Date }
 });
 
+// --- NEW: User Game Data Schema (For Avatar, Coins, Rewards) ---
+const userGameDataSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'UserAuthData', required: true, unique: true, index: true },
+  level: { type: Number, default: 1 },
+  xp: { type: Number, default: 0 },
+  coins: { type: Number, default: 0 }, // Start with 0 coins
+  lastDailyReward: { type: Date },
+
+  pendingSeconds: { type: Number, default: 0 }, // สะสมวินาทีเพื่อแลกเหรียญ (300s = 1 coin)
+
+  avatar: {
+    skin: { type: String, default: '#e0ac69' },
+    shirt: { type: String, default: '#3b82f6' },
+    hairIndex: { type: Number, default: 0 },
+    hairColor: { type: String, default: '#000000' }
+  },
+  inventory: [{
+    itemId: String,
+    acquiredAt: { type: Date, default: Date.now }
+  }]
+});
+
+const userSignSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'UserAuthData', required: true },
+  lat: { type: Number, required: true },
+  lng: { type: Number, required: true },
+  message: { type: String, required: true, maxLength: 16 }, // Limit 16 chars
+  comments: [{
+    username: String,
+    text: { type: String, maxLength: 100 },
+    createdAt: { type: Date, default: Date.now }
+  }],
+  createdAt: { type: Date, default: Date.now } // We will filter > 24h manually or use TTL
+});
+// Create Index for TTL (Time To Live) - Auto delete after 24 hours (86400 seconds)
+userSignSchema.index({ "createdAt": 1 }, { expireAfterSeconds: 86400 });
+
+const UserSign = mongoose.model('UserSign', userSignSchema);
+
 // Password hashing middleware
 userAuthDataSchema.pre('save', async function(next) {
   if (!this.isModified('password')) return next();
@@ -143,6 +198,8 @@ const Visitor = mongoose.model('Visitor', visitorSchema);
 const ReferrerStat = mongoose.model('ReferrerStat', referrerStatSchema);
 const UserAuthData = mongoose.model('UserAuthData', userAuthDataSchema);
 const UserAuthReport = mongoose.model('UserAuthReport', userAuthReportSchema);
+// NEW MODEL
+const UserGameData = mongoose.model('UserGameData', userGameDataSchema);
 
 // =============================================================================
 // HELPER FUNCTIONS
@@ -156,8 +213,7 @@ const createAdminAccount = async () => {
 
     const adminPassword = process.env.ADMIN_PASSWORD;
     if (!adminPassword) {
-      console.error('\nCRITICAL WARNING: ไม่ได้ตั้งค่า ADMIN_PASSWORD ในไฟล์ .env');
-      console.error('ไม่สามารถสร้างบัญชี Admin ได้ กรุณาเพิ่ม ADMIN_PASSWORD ใน .env\n');
+      console.error('\nCRITICAL WARNING: ADMIN_PASSWORD not set in .env');
       return;
     }
 
@@ -169,10 +225,10 @@ const createAdminAccount = async () => {
     });
 
     await adminUser.save();
-    console.log('สร้างบัญชี Admin เริ่มต้นสำเร็จ');
+    console.log('Created Default Admin Account');
 
   } catch (error) {
-    console.error('เกิดข้อผิดพลาดระหว่างสร้างบัญชี Admin:', error.message);
+    console.error('Error creating admin:', error.message);
   }
 };
 
@@ -289,7 +345,6 @@ authRouter.post('/forgot-password', async (req, res) => {
     const user = await UserAuthData.findOne({ email: email.toLowerCase() });
 
     if (!user) {
-      // It's good practice not to reveal whether an email exists for security reasons.
       return res.status(200).json({ message: 'หากอีเมลนี้มีอยู่ในระบบ ลิงก์สำหรับรีเซ็ตรหัสผ่านจะถูกส่งไปให้' });
     }
 
@@ -299,19 +354,14 @@ authRouter.post('/forgot-password', async (req, res) => {
     user.passwordResetExpires = Date.now() + 3600000; // Token valid for 1 hour
     await user.save();
 
-    // FIX APPLIED: Changed `nodemailer.createTransporter` to `nodemailer.createTransport`
     const transporter = nodemailer.createTransport({
       host: process.env.EMAIL_HOST,
-      port: 587, // Hardcoded to 587 as requested
-      secure: false, // Hardcoded to false for port 587 (typically uses STARTTLS)
+      port: 587,
+      secure: false,
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS,
-      },
-      // Optional: Add TLS options if you encounter issues, especially with self-signed certs or specific providers
-      // tls: {
-      //   rejectUnauthorized: false
-      // }
+      }
     });
 
     const clientBaseURL = process.env.clientBaseURL || 'http://127.0.0.1:5501';
@@ -319,25 +369,12 @@ authRouter.post('/forgot-password', async (req, res) => {
 
     const mailOptions = {
       to: user.email,
-      from: `ล่าคูปอง <${process.env.EMAIL_USER}>`, // Make sure EMAIL_USER is a valid sender address
+      from: `ล่าคูปอง <${process.env.EMAIL_USER}>`,
       subject: 'คำขอรีเซ็ตรหัสผ่าน',
-      html: `
-        <p>คุณได้รับอีเมลนี้เนื่องจากมีการร้องขอรีเซ็ตรหัสผ่านสำหรับบัญชีของคุณ</p>
-        <p>กรุณาคลิกลิงก์ต่อไปนี้ หรือคัดลอกไปวางในเบราว์เซอร์ของคุณเพื่อดำเนินการต่อ:</p>
-        <p><a href="${resetURL}">รีเซ็ตรหัสผ่านของคุณ</a></p>
-        <p>ลิงก์นี้จะหมดอายุภายใน 1 ชั่วโมง</p>
-        <p>หากคุณไม่ได้เป็นผู้ร้องขอ กรุณาไม่ต้องดำเนินการใดๆ และรหัสผ่านของคุณจะยังคงปลอดภัย</p>
-        <p>ขอบคุณ</p>
-        <p>ทีมงานล่าคูปอง</p>
-      `,
-      text: `คุณได้รับอีเมลนี้เนื่องจากมีการร้องขอรีเซ็ตรหัสผ่านสำหรับบัญชีของคุณ\n\n` +
-            `กรุณาคลิกลิงก์ต่อไปนี้ หรือคัดลอกไปวางในเบราว์เซอร์ของคุณเพื่อดำเนินการต่อ:\n\n` +
-            `${resetURL}\n\n` +
-            `หากคุณไม่ได้เป็นผู้ร้องขอ กรุณาไม่ต้องดำเนินการใดๆ และรหัสผ่านของคุณจะยังคงปลอดภัย\n`
+      html: `<p>คลิกเพื่อรีเซ็ตรหัสผ่าน: <a href="${resetURL}">${resetURL}</a></p>`
     };
 
     await transporter.sendMail(mailOptions);
-    
     res.status(200).json({ message: 'หากอีเมลนี้มีอยู่ในระบบ ลิงก์สำหรับรีเซ็ตรหัสผ่านจะถูกส่งไปให้' });
 
   } catch (error) {
@@ -355,7 +392,7 @@ authRouter.post('/reset-password/:token', async (req, res) => {
     });
 
     if (!user) {
-      return res.status(400).json({ message: 'Token สำหรับรีเซ็ตรหัสผ่านไม่ถูกต้องหรือหมดอายุแล้ว' });
+      return res.status(400).json({ message: 'Token ไม่ถูกต้องหรือหมดอายุ' });
     }
 
     user.password = password;
@@ -375,7 +412,7 @@ authRouter.post('/register', async (req, res) => {
   try {
     const { username, email, password, gender, ageRange, referral } = req.body;
     if (!username || !email || !password) {
-      return res.status(400).json({ message: "Username, email, and password are required." });
+      return res.status(400).json({ message: "Required fields missing." });
     }
     
     let user = await UserAuthData.findOne({
@@ -383,28 +420,31 @@ authRouter.post('/register', async (req, res) => {
     });
     
     if (user) {
-      return res.status(400).json({ message: 'User with this email or username already exists.' });
+      return res.status(400).json({ message: 'User already exists.' });
     }
     
     user = new UserAuthData({ username, email, password, gender, ageRange, referral });
     await user.save();
     
+    // Initialize Stats Report
     const newReport = new UserAuthReport({ userId: user._id });
     await newReport.save();
+
+    // UPDATE: Initialize Game Data (Avatar/Coins)
+    const newGameData = new UserGameData({ userId: user._id });
+    await newGameData.save();
     
     res.status(201).json({ message: 'User registered successfully!' });
   } catch (error) {
     console.error("Registration Error:", error);
-    res.status(500).json({ message: "Server error during registration." });
+    res.status(500).json({ message: "Server error." });
   }
 });
 
 authRouter.post('/login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    if (!username || !password) {
-      return res.status(400).json({ message: 'Username and password are required.' });
-    }
+    if (!username || !password) return res.status(400).json({ message: 'Missing credentials.' });
     
     const user = await UserAuthData.findOne({ username: username.toLowerCase() });
     if (!user) return res.status(401).json({ message: 'Invalid credentials.' });
@@ -416,6 +456,14 @@ authRouter.post('/login', async (req, res) => {
       { userId: user._id },
       { $set: { lastLogin: new Date() } }
     );
+
+    // UPDATE: Check/Create Game Data for Backward Compatibility
+    // If an old user logs in, they won't have GameData, so create it now to prevent bugs.
+    const gameDataExists = await UserGameData.findOne({ userId: user._id });
+    if (!gameDataExists) {
+      await new UserGameData({ userId: user._id }).save();
+      console.log(`Created missing GameData for user: ${user.username}`);
+    }
     
     const payload = { id: user._id, username: user.username, role: user.role };
     const expiresIn = user.role === 'admin' ? '6h' : '7d';
@@ -429,7 +477,7 @@ authRouter.post('/login', async (req, res) => {
     
   } catch (error) {
     console.error("Login Error:", error);
-    res.status(500).json({ message: 'Server error during login.' });
+    res.status(500).json({ message: 'Server error.' });
   }
 });
 
@@ -440,11 +488,106 @@ authRouter.get('/verify', authMiddleware, async (req, res) => {
     res.json({ success: true, user: { username: user.username } });
   } catch (error) {
     console.error("Verify Token Error:", error);
-    res.status(500).json({ message: 'Server error during token verification' });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
 app.use('/api/auth', authRouter);
+
+// =============================================================================
+// GAME FEATURES ROUTES (NEW)
+// =============================================================================
+
+// 1. Get Game Profile (Avatar, Coins, Level)
+app.get('/api/game/profile', authMiddleware, async (req, res) => {
+    try {
+        let gameData = await UserGameData.findOne({ userId: req.user.id });
+        
+        // Safety check if not exists
+        if (!gameData) {
+            gameData = new UserGameData({ userId: req.user.id });
+            await gameData.save();
+        }
+        
+        res.json(gameData);
+    } catch (error) {
+        console.error('Game Profile Error:', error);
+        res.status(500).json({ message: 'Error loading profile' });
+    }
+});
+
+// 2. Update Avatar Configuration
+app.put('/api/game/avatar', authMiddleware, async (req, res) => {
+    try {
+        const { skin, shirt, hairIndex, hairColor } = req.body;
+        
+        const updatedProfile = await UserGameData.findOneAndUpdate(
+            { userId: req.user.id },
+            { 
+                $set: { 
+                    'avatar.skin': skin,
+                    'avatar.shirt': shirt,
+                    'avatar.hairIndex': hairIndex,
+                    'avatar.hairColor': hairColor
+                }
+            },
+            { new: true } // Return updated doc
+        );
+        
+        res.json(updatedProfile);
+    } catch (error) {
+        console.error('Avatar Update Error:', error);
+        res.status(500).json({ message: 'Error updating avatar' });
+    }
+});
+
+// 3. Claim Daily Reward
+app.post('/api/game/daily-reward', authMiddleware, async (req, res) => {
+    try {
+        const gameData = await UserGameData.findOne({ userId: req.user.id });
+        if (!gameData) return res.status(404).json({ message: 'Profile not found' });
+
+        const now = new Date();
+        const lastClaim = gameData.lastDailyReward ? new Date(gameData.lastDailyReward) : null;
+
+        let canClaim = true;
+        
+        // Simple daily check (Server Time)
+        if (lastClaim) {
+            // Check if Year/Month/Day are the same
+            if (lastClaim.getFullYear() === now.getFullYear() &&
+                lastClaim.getMonth() === now.getMonth() &&
+                lastClaim.getDate() === now.getDate()) {
+                canClaim = false;
+            }
+        }
+
+        if (!canClaim) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'คุณได้รับรางวัลของวันนี้ไปแล้ว กลับมาใหม่พรุ่งนี้นะ!' 
+            });
+        }
+
+        const reward = 30
+        
+        gameData.coins += reward;
+        gameData.lastDailyReward = now;
+        await gameData.save();
+
+        res.json({ 
+            success: true, 
+            reward: reward, 
+            newBalance: gameData.coins,
+            message: `ยินดีด้วย! คุณได้รับ ${reward} เหรียญ`
+        });
+
+    } catch (error) {
+        console.error('Daily Reward Error:', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
 
 // =============================================================================
 // PUBLIC TREASURE ROUTES
@@ -469,6 +612,8 @@ app.post('/api/treasures', optionalAuthMiddleware, trackVisitor, countApiCall('t
         { $inc: { treasuresPlaced: 1 } },
         { upsert: true }
       );
+      // Optional: Give coins for placing treasure? 
+      // await UserGameData.updateOne({ userId: req.user.id }, { $inc: { coins: 10 } });
     }
 
     res.status(201).json(newTreasure);
@@ -495,6 +640,12 @@ app.patch('/api/treasures/:id', optionalAuthMiddleware, trackVisitor, countApiCa
         { $inc: { treasuresClaimed: 1 } },
         { upsert: true }
       );
+      
+      // UPDATE: Give XP/Coins for claiming treasure
+      await UserGameData.updateOne(
+          { userId: req.user.id }, 
+          { $inc: { xp: 50, coins: 20 } }
+      );
     }
 
     if (treasure.remainingBoxes <= 0) {
@@ -510,18 +661,15 @@ app.patch('/api/treasures/:id', optionalAuthMiddleware, trackVisitor, countApiCa
       );
       
       await Treasure.findByIdAndDelete(treasure._id);
-      console.log(`Treasure ID: ${treasure._id} deleted successfully.`);
     }
 
     res.json(treasure);
 
   } catch (err) {
     console.error(`Error processing claim for treasure ID: ${req.params.id}`, err);
-    
     if (err.name === 'CastError') {
       return res.status(400).json({ message: 'ID ของคูปองไม่ถูกต้อง' });
     }
-    
     res.status(500).json({ message: 'เกิดข้อผิดพลาดในระบบขณะพยายามใช้คูปอง' });
   }
 });
@@ -582,12 +730,36 @@ app.patch('/api/users/log-time', authMiddleware, async (req, res) => {
       return res.status(400).json({ message: 'ข้อมูลไม่ถูกต้อง' });
     }
     
+    // 1. Update Report (Stats)
     await UserAuthReport.updateOne(
       { userId: req.user.id },
       { $inc: { totalTimeOnPageSeconds: Math.round(durationSeconds) } }
     );
+
+    // 2. Update Game Data (Coins Logic)
+    const gameData = await UserGameData.findOne({ userId: req.user.id });
+    if (gameData) {
+        gameData.pendingSeconds = (gameData.pendingSeconds || 0) + Math.round(durationSeconds);
+        
+        let coinsEarned = 0;
+        if (gameData.pendingSeconds >= SECONDS_PER_COIN) {
+            coinsEarned = Math.floor(gameData.pendingSeconds / SECONDS_PER_COIN);
+            gameData.coins += coinsEarned;
+            gameData.pendingSeconds = gameData.pendingSeconds % SECONDS_PER_COIN;
+        }
+
+        await gameData.save();
+
+        // Pass the Rate back to frontend so it knows how to display text
+        return res.json({ 
+            success: true, 
+            coinsEarned, 
+            newBalance: gameData.coins,
+            rate: Math.ceilSECONDS_PER_COIN  
+        });
+    }
     
-    res.sendStatus(204);
+    res.json({ success: true, coinsEarned: 0 });
   } catch (error) {
     console.error('Error logging user time:', error);
     res.status(500).json({ message: 'Server Error' });
@@ -715,6 +887,8 @@ app.delete('/api/admin/reset-data', adminAuthMiddleware, async (req, res) => {
     const r4 = await ReferrerStat.deleteMany({});
     const r5 = await UserAuthData.deleteMany({});
     const r6 = await UserAuthReport.deleteMany({});
+    // Also reset Game Data
+    const r7 = await UserGameData.deleteMany({});
     
     res.json({
       message: 'ล้างข้อมูลทั้งหมดในระบบสำเร็จ',
@@ -724,7 +898,8 @@ app.delete('/api/admin/reset-data', adminAuthMiddleware, async (req, res) => {
         visitors: r3.deletedCount,
         referrers: r4.deletedCount,
         users: r5.deletedCount,
-        reports: r6.deletedCount
+        reports: r6.deletedCount,
+        gameData: r7.deletedCount
       }
     });
   } catch (err) {
@@ -737,7 +912,6 @@ app.delete('/api/admin/reset-data', adminAuthMiddleware, async (req, res) => {
 
 app.get('/api/admin/users-overview', adminAuthMiddleware, async (req, res) => {
     try {
-        // เพิ่มเงื่อนไข { role: { $ne: 'admin' } } เพื่อไม่นับ admin
         const users = await UserAuthData.find({ role: { $ne: 'admin' } }).select('gender ageRange');
         res.json(users);
     } catch (err) {
@@ -751,21 +925,17 @@ app.get('/api/admin/user-reports', adminAuthMiddleware, async (req, res) => {
             .populate({
                 path: 'userId',
                 select: 'username role',
-                // เพิ่มเงื่อนไข match เพื่อกรอง user ที่มี role ไม่ใช่ 'admin'
                 match: { role: { $ne: 'admin' } }
             })
             .sort({ lastLogin: -1 });
 
-        // กรองผลลัพธ์สุดท้ายเพื่อให้แน่ใจว่าไม่มี report ที่ userId เป็น null (เพราะไม่ match)
         const filteredReports = reports.filter(report => report.userId !== null);
-
         res.json(filteredReports);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
 });
 
-// Endpoint ใหม่สำหรับดึงข้อมูลเวลารวมทั้งหมด
 app.get('/api/admin/stats/total-time', adminAuthMiddleware, async (req, res) => {
     try {
         const visitorTimeResult = await Visitor.aggregate([
@@ -779,7 +949,7 @@ app.get('/api/admin/stats/total-time', adminAuthMiddleware, async (req, res) => 
         });
         
         const userTimeInSeconds = userReports
-            .filter(report => report.userId !== null) // กรอง admin ออก
+            .filter(report => report.userId !== null)
             .reduce((sum, report) => sum + report.totalTimeOnPageSeconds, 0);
 
         res.json({
@@ -792,13 +962,168 @@ app.get('/api/admin/stats/total-time', adminAuthMiddleware, async (req, res) => 
     }
 });
 
-// Endpoint ใหม่สำหรับดึง Visitors ทั้งหมด (สำหรับหน้า Fullscreen)
 app.get('/api/admin/visitors/all', adminAuthMiddleware, async (req, res) => {
     try {
         const visitors = await Visitor.find().sort({ lastVisit: -1 });
         res.json(visitors);
     } catch (err) {
         res.status(500).json({ message: 'Server Error', error: err.message });
+    }
+});
+
+// =============================================================================
+// SHOP ROUTES (NEW)
+// =============================================================================
+
+// 1. Get Shop Items & User Inventory
+app.get('/api/shop', authMiddleware, async (req, res) => {
+    try {
+        const gameData = await UserGameData.findOne({ userId: req.user.id });
+        // Return available items and what user already owns
+        const ownedItemIds = gameData.inventory.map(i => i.itemId);
+        res.json({ items: SHOP_ITEMS, owned: ownedItemIds, coins: gameData.coins });
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// 2. Buy Item
+app.post('/api/shop/buy', authMiddleware, async (req, res) => {
+    try {
+        const { itemId } = req.body;
+        const item = SHOP_ITEMS.find(i => i.id === itemId);
+        
+        if (!item) return res.status(404).json({ message: 'ไม่พบสินค้านี้' });
+
+        const gameData = await UserGameData.findOne({ userId: req.user.id });
+
+        // Check ownership
+        if (gameData.inventory.some(i => i.itemId === itemId)) {
+            return res.status(400).json({ message: 'คุณมีสินค้านี้อยู่แล้ว' });
+        }
+
+        // Check balance
+        if (gameData.coins < item.price) {
+            return res.status(400).json({ message: 'เหรียญไม่พอครับ' });
+        }
+
+        // Transaction
+        gameData.coins -= item.price;
+        gameData.inventory.push({ itemId: item.id });
+        
+        // Auto-equip logic (Optional: instantly wear what you buy)
+        if (item.type === 'skin') gameData.avatar.skin = item.value;
+        if (item.type === 'shirt') gameData.avatar.shirt = item.value;
+
+        await gameData.save();
+
+        res.json({ 
+            success: true, 
+            message: `ซื้อ ${item.name} สำเร็จ!`, 
+            newBalance: gameData.coins,
+            avatar: gameData.avatar,
+            owned: gameData.inventory.map(i => i.itemId)
+        });
+
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Transaction Failed' });
+    }
+});
+
+// =============================================================================
+// SOCIAL SIGN ROUTES (NEW)
+// =============================================================================
+
+// 1. Post a new Sign
+app.post('/api/signs', authMiddleware, async (req, res) => {
+    try {
+        const { lat, lng, message } = req.body;
+        
+        // Check Cooldown (1 hour)
+        const gameData = await UserGameData.findOne({ userId: req.user.id });
+        const lastSign = gameData.lastSignPlacedAt ? new Date(gameData.lastSignPlacedAt) : null;
+        const now = new Date();
+
+        if (lastSign) {
+            const diffMinutes = (now - lastSign) / 1000 / 60;
+            if (diffMinutes < 60) {
+                const remaining = Math.ceil(60 - diffMinutes);
+                return res.status(400).json({ message: `รออีก ${remaining} นาที ถึงจะปักป้ายใหม่ได้` });
+            }
+        }
+
+        const newSign = new UserSign({
+            userId: req.user.id,
+            lat, lng, 
+            message: message.substring(0, 16) // Enforce limit
+        });
+        await newSign.save();
+
+        // Update Cooldown
+        gameData.lastSignPlacedAt = now;
+        await gameData.save();
+
+        res.status(201).json({ success: true, message: 'ปักป้ายสำเร็จ!' });
+    } catch (error) {
+        console.error('Post Sign Error:', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// 2. Get all Signs (with Avatar data)
+app.get('/api/signs', async (req, res) => {
+    try {
+        // Aggregate to join with UserGameData to get Avatar
+        const signs = await UserSign.aggregate([
+            {
+                $lookup: {
+                    from: 'usergamedatas', // MongoDB collection name is lowercase plural
+                    localField: 'userId',
+                    foreignField: 'userId',
+                    as: 'gameData'
+                }
+            },
+            {
+                $lookup: {
+                    from: 'userauthdatas',
+                    localField: 'userId',
+                    foreignField: '_id',
+                    as: 'userData'
+                }
+            },
+            {
+                $project: {
+                    lat: 1, lng: 1, message: 1, comments: 1, createdAt: 1,
+                    avatar: { $arrayElemAt: ["$gameData.avatar", 0] },
+                    username: { $arrayElemAt: ["$userData.username", 0] }
+                }
+            }
+        ]);
+        res.json(signs);
+    } catch (error) {
+        console.error('Get Signs Error:', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// 3. Post a Comment
+app.post('/api/signs/:id/comments', authMiddleware, async (req, res) => {
+    try {
+        const { text } = req.body;
+        const sign = await UserSign.findById(req.params.id);
+        
+        if (!sign) return res.status(404).json({ message: 'ไม่พบป้ายนี้ (อาจหมดอายุแล้ว)' });
+
+        sign.comments.push({
+            username: req.user.username,
+            text: text.substring(0, 100)
+        });
+        
+        await sign.save();
+        res.json({ success: true, comments: sign.comments });
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error' });
     }
 });
 
