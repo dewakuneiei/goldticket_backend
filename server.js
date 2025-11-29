@@ -168,16 +168,34 @@ const userSignSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'UserAuthData', required: true },
   lat: { type: Number, required: true },
   lng: { type: Number, required: true },
-  message: { type: String, required: true, maxLength: 16 }, // Limit 16 chars
+  
+  // Type: 'normal' (announcement) or 'poll' (vote)
+  type: { type: String, enum: ['normal', 'vote', 'poll'], default: 'normal' },
+
+  // Content for Normal Sign
+  message: { type: String, maxLength: 100 }, // Increased slightly for better UX, or keep 16 if strict
+
+  // Content for Poll Sign
+  pollTitle: { type: String, maxLength: 32 },
+  pollDescription: { type: String, maxLength: 258 },
+  pollOptions: [{
+    text: { type: String, required: true },
+    voters: [{ type: mongoose.Schema.Types.ObjectId, ref: 'UserAuthData' }] // Array of User IDs who voted for this option
+  }],
+
   comments: [{
     username: String,
     text: { type: String, maxLength: 100 },
     createdAt: { type: Date, default: Date.now }
   }],
-  createdAt: { type: Date, default: Date.now } // We will filter > 24h manually or use TTL
+  
+  createdAt: { type: Date, default: Date.now },
+  expiresAt: { type: Date, required: true } // Dynamic expiration date
 });
-// Create Index for TTL (Time To Live) - Auto delete after 24 hours (86400 seconds)
-userSignSchema.index({ "createdAt": 1 }, { expireAfterSeconds: 86400 });
+
+// Create Index for TTL based on 'expiresAt' field
+// MongoDB will delete the document when the current time > expiresAt
+userSignSchema.index({ "expiresAt": 1 }, { expireAfterSeconds: 0 });
 
 const UserSign = mongoose.model('UserSign', userSignSchema);
 
@@ -1038,9 +1056,9 @@ app.post('/api/shop/buy', authMiddleware, async (req, res) => {
 // 1. Post a new Sign
 app.post('/api/signs', authMiddleware, async (req, res) => {
     try {
-        const { lat, lng, message } = req.body;
+        const { lat, lng, type, message, pollTitle, pollDescription, pollOptions, durationHours } = req.body;
         
-        // Check Cooldown (1 hour)
+        // --- [Keep Cooldown Logic same as before] ---
         const gameData = await UserGameData.findOne({ userId: req.user.id });
         const lastSign = gameData.lastSignPlacedAt ? new Date(gameData.lastSignPlacedAt) : null;
         const now = new Date();
@@ -1053,14 +1071,56 @@ app.post('/api/signs', authMiddleware, async (req, res) => {
             }
         }
 
-        const newSign = new UserSign({
+        // --- Calculate Expiration ---
+        let validHours = [24, 48, 72];
+        let hoursToAdd = validHours.includes(durationHours) ? durationHours : 24;
+        const expiresAt = new Date(now.getTime() + (hoursToAdd * 60 * 60 * 1000));
+
+        const newSignObj = {
             userId: req.user.id,
-            lat, lng, 
-            message: message.substring(0, 16) // Enforce limit
-        });
+            lat, 
+            lng,
+            type: type || 'normal',
+            createdAt: now,
+            expiresAt: expiresAt
+        };
+
+        // --- VALIDATION LOGIC UPDATED ---
+        if (newSignObj.type === 'vote' || newSignObj.type === 'poll') {
+            // Common Validation for Vote & Poll
+            if (!pollTitle || pollTitle.length > 32) return res.status(400).json({ message: 'หัวข้อต้องไม่เกิน 32 ตัวอักษร' });
+            
+            // Clean Options: Remove null/empty/undefined
+            const validOptions = Array.isArray(pollOptions) 
+                ? pollOptions.filter(opt => opt && opt.trim() !== "") 
+                : [];
+
+            // Specific Validation
+            if (newSignObj.type === 'vote') {
+                // VOTE: Strict 2-3 Options
+                if (validOptions.length < 2 || validOptions.length > 3) {
+                    return res.status(400).json({ message: 'โหวตต้องมีตัวเลือก 2 หรือ 3 ข้อ' });
+                }
+            } else {
+                // POLL: 2-10 Options
+                if (validOptions.length < 2 || validOptions.length > 10) {
+                    return res.status(400).json({ message: 'โพลต้องมีตัวเลือกเริ่มต้น 2-10 ข้อ' });
+                }
+            }
+
+            newSignObj.pollTitle = pollTitle;
+            newSignObj.pollDescription = pollDescription;
+            newSignObj.pollOptions = validOptions.map(opt => ({ text: opt.trim(), voters: [] }));
+
+        } else {
+            // NORMAL SIGN
+            if (!message) return res.status(400).json({ message: 'กรุณาระบุข้อความ' });
+            newSignObj.message = message.substring(0, 16); 
+        }
+
+        const newSign = new UserSign(newSignObj);
         await newSign.save();
 
-        // Update Cooldown
         gameData.lastSignPlacedAt = now;
         await gameData.save();
 
@@ -1071,14 +1131,14 @@ app.post('/api/signs', authMiddleware, async (req, res) => {
     }
 });
 
+
 // 2. Get all Signs (with Avatar data)
 app.get('/api/signs', async (req, res) => {
     try {
-        // Aggregate to join with UserGameData to get Avatar
         const signs = await UserSign.aggregate([
             {
                 $lookup: {
-                    from: 'usergamedatas', // MongoDB collection name is lowercase plural
+                    from: 'usergamedatas',
                     localField: 'userId',
                     foreignField: 'userId',
                     as: 'gameData'
@@ -1094,9 +1154,21 @@ app.get('/api/signs', async (req, res) => {
             },
             {
                 $project: {
-                    lat: 1, lng: 1, message: 1, comments: 1, createdAt: 1,
+                    lat: 1, lng: 1, 
+                    type: 1, // Include Type
+                    message: 1, 
+                    // Include Poll Data
+                    pollTitle: 1,
+                    pollDescription: 1,
+                    pollOptions: 1,
+                    
+                    comments: 1, 
+                    createdAt: 1, 
+                    expiresAt: 1,
+                    
                     avatar: { $arrayElemAt: ["$gameData.avatar", 0] },
-                    username: { $arrayElemAt: ["$userData.username", 0] }
+                    username: { $arrayElemAt: ["$userData.username", 0] },
+                    userId: 1 // Needed for client side check (did I vote?)
                 }
             }
         ]);
@@ -1111,18 +1183,212 @@ app.get('/api/signs', async (req, res) => {
 app.post('/api/signs/:id/comments', authMiddleware, async (req, res) => {
     try {
         const { text } = req.body;
-        const sign = await UserSign.findById(req.params.id);
         
+        // 1. Validate Input
+        if (!text || text.trim() === "") {
+            return res.status(400).json({ message: 'ข้อความว่างเปล่า' });
+        }
+
+        // 2. Find Sign
+        const sign = await UserSign.findById(req.params.id);
         if (!sign) return res.status(404).json({ message: 'ไม่พบป้ายนี้ (อาจหมดอายุแล้ว)' });
 
+        // 3. Get Username (Robust Check)
+        // Try to get from token payload first
+        let username = req.user.username;
+        
+        // If missing in token, fetch from DB
+        if (!username) {
+            const user = await UserAuthData.findById(req.user.id);
+            if (!user) return res.status(404).json({ message: 'User not found' });
+            username = user.username;
+        }
+
+        // 4. Add Comment
         sign.comments.push({
-            username: req.user.username,
-            text: text.substring(0, 100)
+            username: username,
+            text: text.substring(0, 100) // Truncate if too long
         });
         
         await sign.save();
         res.json({ success: true, comments: sign.comments });
+
     } catch (error) {
+        console.error('Post Comment Error:', error); // Log actual error
+        res.status(500).json({ message: 'Server Error: ' + error.message });
+    }
+});
+
+// 4. Vote on a Poll OR Vote Sign
+app.post('/api/signs/:id/vote', authMiddleware, async (req, res) => {
+    try {
+        const { optionIndex } = req.body; 
+        const signId = req.params.id;
+        const userId = req.user.id;
+
+        const sign = await UserSign.findById(signId);
+        if (!sign) return res.status(404).json({ message: 'ไม่พบป้ายนี้' });
+
+        if (sign.type !== 'poll' && sign.type !== 'vote') {
+            return res.status(400).json({ message: 'ป้ายนี้ไม่ใช่แบบโหวต' });
+        }
+
+        if (optionIndex < 0 || optionIndex >= sign.pollOptions.length) {
+            return res.status(400).json({ message: 'ตัวเลือกไม่ถูกต้อง' });
+        }
+
+        const targetOption = sign.pollOptions[optionIndex];
+        // Check if user already voted for THIS option
+        const existingIndex = targetOption.voters.findIndex(v => v.toString() === userId);
+
+        if (existingIndex > -1) {
+            // TOGGLE OFF: Remove vote (Unvote)
+            targetOption.voters.splice(existingIndex, 1);
+        } else {
+            // TOGGLE ON:
+            // 1. Remove user from ALL other options (Single Choice Rule)
+            sign.pollOptions.forEach(opt => {
+                opt.voters = opt.voters.filter(v => v.toString() !== userId);
+            });
+            // 2. Add to target
+            targetOption.voters.push(userId);
+        }
+
+        await sign.save();
+        res.json({ success: true, message: 'บันทึกคะแนนแล้ว', pollOptions: sign.pollOptions });
+
+    } catch (error) {
+        console.error('Vote Error:', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// Get Single Sign with Full Details (Avatars + Comments Avatar)
+app.get('/api/signs/:id/details', async (req, res) => {
+    try {
+        const signId = req.params.id;
+        const limit = parseInt(req.query.commentLimit) || 10;
+        const skip = parseInt(req.query.commentSkip) || 0;
+
+        // 1. Fetch Sign + Pagination for Comments
+        const sign = await UserSign.findById(signId, {
+            // Project only necessary fields + Sliced Comments
+            // Note: We need full comments COUNT to know if we should show "Load More"
+            // So we might need two queries or an aggregation.
+            // Aggregation is better.
+        }).lean(); 
+
+        if (!sign) return res.status(404).json({ message: 'Sign not found' });
+
+        // AGGREGATION PIPELINE for Pagination
+        const pipeline = [
+            { $match: { _id: new mongoose.Types.ObjectId(signId) } },
+            {
+                $project: {
+                    lat: 1, lng: 1, type: 1, message: 1, pollTitle: 1, pollDescription: 1, pollOptions: 1, createdAt: 1, expiresAt: 1, userId: 1,
+                    totalComments: { $size: "$comments" }, // Get total count
+                    comments: { 
+                        $slice: [{ $reverseArray: "$comments" }, skip, limit] // Slice REVERSED array (Newest first)
+                    }
+                }
+            }
+        ];
+        
+        const resultAgg = await UserSign.aggregate(pipeline);
+        const signData = resultAgg[0];
+
+        // 2. Fetch Owner Info
+        const ownerGame = await UserGameData.findOne({ userId: signData.userId });
+        const ownerAuth = await UserAuthData.findById(signData.userId);
+
+        // 3. Fetch Avatars for Commenters (in this batch)
+        const commentUsernames = signData.comments.map(c => c.username);
+        const commentUsers = await UserAuthData.find({ username: { $in: commentUsernames } });
+        
+        // 4. Fetch Avatars for Poll Voters (if poll)
+        let voterIds = [];
+        if (signData.type === 'poll') {
+            signData.pollOptions.forEach(opt => voterIds = voterIds.concat(opt.voters));
+        }
+        
+        // Combine IDs to fetch avatars
+        const commentUserIds = commentUsers.map(u => u._id);
+        const allIdsToFetch = [...new Set([...voterIds, ...commentUserIds])];
+        
+        const userGameDatas = await UserGameData.find({ userId: { $in: allIdsToFetch } });
+        const avatarMap = {};
+        userGameDatas.forEach(g => avatarMap[g.userId.toString()] = g.avatar);
+        
+        const usernameToIdMap = {};
+        commentUsers.forEach(u => usernameToIdMap[u.username] = u._id.toString());
+
+        // 5. Construct Response
+        // Populate Poll
+        let populatedOptions = signData.pollOptions.map(opt => ({
+            text: opt.text,
+            count: opt.voters.length,
+            // Only populate voters array if POLL (Privacy)
+            voters: signData.type === 'poll' ? opt.voters.map(vId => ({
+                id: vId,
+                avatar: avatarMap[vId.toString()] || { skin: '#ccc', shirt: '#fff' }
+            })) : []
+        }));
+
+        // Populate Comments
+        const populatedComments = signData.comments.map(c => {
+            const uId = usernameToIdMap[c.username];
+            return {
+                username: c.username,
+                text: c.text,
+                createdAt: c.createdAt,
+                avatar: (uId && avatarMap[uId]) ? avatarMap[uId] : { skin: '#e0ac69', shirt: '#9ca3af' }
+            };
+        });
+
+        res.json({
+            ...signData,
+            username: ownerAuth ? ownerAuth.username : 'Unknown',
+            avatar: ownerGame ? ownerGame.avatar : {},
+            pollOptions: populatedOptions,
+            comments: populatedComments, // Sliced batch
+            totalComments: signData.totalComments // Total count for frontend logic
+        });
+
+    } catch (error) {
+        console.error('Get Sign Details Error:', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// 5. Add Option to Poll (Only for type='poll')
+app.post('/api/signs/:id/options', authMiddleware, async (req, res) => {
+    try {
+        const { newOption } = req.body;
+        const signId = req.params.id;
+
+        if (!newOption || newOption.trim() === "") return res.status(400).json({ message: 'ข้อความว่างเปล่า' });
+
+        const sign = await UserSign.findById(signId);
+        if (!sign) return res.status(404).json({ message: 'ไม่พบป้าย' });
+        if (sign.type !== 'poll') return res.status(400).json({ message: 'เฉพาะโพลเท่านั้นที่เพิ่มตัวเลือกได้' });
+
+        // Limit Max Options
+        if (sign.pollOptions.length >= 10) {
+            return res.status(400).json({ message: 'ตัวเลือกเต็มแล้ว (สูงสุด 10)' });
+        }
+
+        // Check Duplicate
+        const exists = sign.pollOptions.some(opt => opt.text === newOption.trim());
+        if (exists) return res.status(400).json({ message: 'มีตัวเลือกนี้อยู่แล้ว' });
+
+        // Add Option
+        sign.pollOptions.push({ text: newOption.trim(), voters: [] });
+        await sign.save();
+
+        res.json({ success: true, message: 'เพิ่มตัวเลือกสำเร็จ', pollOptions: sign.pollOptions });
+
+    } catch (error) {
+        console.error('Add Option Error:', error);
         res.status(500).json({ message: 'Server Error' });
     }
 });
